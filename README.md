@@ -1,0 +1,62 @@
+# ExcelCompare
+
+Compares Excel (.xlsx) files in two folders and reports any differences in cell values.
+Recursively scans both folders and matches files by their relative path and name.
+
+## What it does
+
+For each matching `.xlsx` file pair it:
+1. Reads the shared strings table and all worksheets from both files
+2. Resolves every cell to its actual text or numeric value
+3. Reports cells that differ, are missing, or are extra
+
+Only cell **values** are compared — formatting, styles, and metadata (like creation timestamps) are ignored.
+
+## Usage
+
+### Run with .NET installed
+
+```
+dotnet run -- "<folder1>" "<folder2>"
+```
+
+### Run as a standalone executable (no .NET required)
+
+First publish:
+```
+dotnet publish -c Release -r win-x64 --self-contained
+```
+
+The exe is created at:
+```
+bin\Release\net10.0\win-x64\publish\ExcelCompare.exe
+```
+
+Then run:
+```
+ExcelCompare.exe "<folder1>" "<folder2>"
+```
+
+To save the output to a file:
+```
+ExcelCompare.exe "<folder1>" "<folder2>" > result.txt
+```
+
+## Example output
+
+```
+=== SUMMARY ===
+Identical:     249
+Different:     3
+Missing/extra: 0
+Total checked: 252
+
+=== DETAILS ===
+DIFFER (1 cell(s)): A\SomeFile.xlsx
+  xl/worksheets/sheet2.xml C3: [2026-04-19] vs [46131]
+```
+
+## Exit code
+
+- `0` — all files are identical
+- `1` — differences or missing files were found
