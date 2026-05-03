@@ -1,15 +1,23 @@
 using System.IO.Compression;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using System.Xml;
 
-if (args.Length < 2)
+bool wantSummary = args.Contains("--summary");
+string[] folders = args.Where(a => a != "--summary").ToArray();
+
+if (folders.Length < 2)
 {
-    Console.WriteLine("Usage: ExcelCompare <folder1> <folder2>");
+    Console.WriteLine("Usage: ExcelCompare <folder1> <folder2> [--summary]");
     Console.WriteLine("Compares all matching .xlsx files recursively and reports cell value differences.");
+    Console.WriteLine("  --summary   Send the diff report to Claude AI for a plain-language summary.");
+    Console.WriteLine("              Requires the ANTHROPIC_API_KEY environment variable to be set.");
     return 1;
 }
 
-string folder1 = args[0].TrimEnd('\\', '/');
-string folder2 = args[1].TrimEnd('\\', '/');
+string folder1 = folders[0].TrimEnd('\\', '/');
+string folder2 = folders[1].TrimEnd('\\', '/');
 
 if (!Directory.Exists(folder1)) { Console.WriteLine($"Folder not found: {folder1}"); return 1; }
 if (!Directory.Exists(folder2)) { Console.WriteLine($"Folder not found: {folder2}"); return 1; }
@@ -76,6 +84,9 @@ if (report.Count > 0)
     foreach (string line in report)
         Console.WriteLine(line);
 }
+
+if (wantSummary)
+    await GenerateSummaryAsync(report, identical, different, missing);
 
 return (different + missing) > 0 ? 1 : 0;
 
@@ -181,4 +192,72 @@ static XmlNamespaceManager Ns(XmlDocument doc)
     var ns = new XmlNamespaceManager(doc.NameTable);
     ns.AddNamespace("x", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
     return ns;
+}
+
+static async Task GenerateSummaryAsync(List<string> report, int identical, int different, int missing)
+{
+    Console.WriteLine("\n=== AI SUMMARY ===");
+
+    string? apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+    if (string.IsNullOrEmpty(apiKey))
+    {
+        Console.WriteLine("[Skipped: ANTHROPIC_API_KEY environment variable is not set]");
+        return;
+    }
+
+    // Limit prompt size — take up to 300 diff lines to stay well within token limits
+    var diffLines = report.Take(300).ToList();
+    bool truncated = report.Count > 300;
+
+    string diffText = string.Join("\n", diffLines);
+    if (truncated)
+        diffText += $"\n... (truncated, {report.Count - 300} more lines not shown)";
+
+    string prompt =
+        $"The following are differences found when comparing two folders of Excel (.xlsx) files.\n" +
+        $"Files: {identical} identical, {different} with differences, {missing} missing/extra.\n\n" +
+        $"Differences:\n{diffText}\n\n" +
+        $"Write a brief plain-language summary. Identify any patterns (e.g. the same type of " +
+        $"difference in every file). State clearly whether the files are functionally equivalent " +
+        $"or if there are meaningful data differences.";
+
+    var requestBody = JsonSerializer.Serialize(new
+    {
+        model = "claude-haiku-4-5",
+        max_tokens = 1024,
+        messages = new[] { new { role = "user", content = prompt } }
+    });
+
+    using var http = new HttpClient();
+    http.DefaultRequestHeaders.Add("x-api-key", apiKey);
+    http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+
+    Console.Write("Contacting Claude... ");
+    try
+    {
+        var response = await http.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(requestBody, Encoding.UTF8, "application/json"));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"[API error {(int)response.StatusCode}: {json}]");
+            return;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        string? text = doc.RootElement
+            .GetProperty("content")[0]
+            .GetProperty("text")
+            .GetString();
+
+        Console.WriteLine("done.\n");
+        Console.WriteLine(text);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Failed: {ex.Message}]");
+    }
 }
